@@ -25,7 +25,7 @@ namespace allinjector
         // 실제 주사기 TypeID들
         private static readonly HashSet<int> SyringeItemIDs = new HashSet<int>
         {
-            137, 398, 408, 438, 797, 798, 800, 856, 857, 875, 1070, 1071, 1072,
+            137, 398, 408, 409, 438, 797, 798, 800, 856, 857, 872, 875, 1070, 1071, 1072, 1274,
         };
 
         private void Awake()
@@ -362,3 +362,4 @@ namespace allinjector
         }
     }
 }
+
