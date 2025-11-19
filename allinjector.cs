@@ -14,7 +14,7 @@ namespace allinjector
         private static bool ShowLog = true;
 
         // 한 번에 케이스 안 주사기들 사용
-        private static readonly KeyCode UseAllKey = KeyCode.K;
+        private static readonly KeyCode UseAllKey = KeyCode.L;
 
         // 주사기 수납백 TypeID
         private static readonly HashSet<int> SyringeCaseIDs = new HashSet<int>
@@ -362,6 +362,7 @@ namespace allinjector
         }
     }
 }
+
 
 
 
