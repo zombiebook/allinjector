@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using ItemStatsSystem;
 using UnityEngine;
@@ -15,6 +16,9 @@ namespace allinjector
 
         // 한 번에 케이스 안 주사기들 사용
         private static readonly KeyCode UseAllKey = KeyCode.L;
+        
+        // 디버그: 인벤토리 아이템 TypeID 출력용
+        private static readonly KeyCode DebugInventoryKey = KeyCode.K;
 
         // 주사기 수납백 TypeID
         private static readonly HashSet<int> SyringeCaseIDs = new HashSet<int>
@@ -54,6 +58,12 @@ namespace allinjector
             if (player == null || player.Health == null || player.Health.IsDead)
                 return;
 
+            // 디버그: K키로 인벤토리 아이템 TypeID 출력
+            if (Input.GetKeyDown(DebugInventoryKey))
+            {
+                DebugInventoryItems(player);
+            }
+
             if (Input.GetKeyDown(UseAllKey))
             {
                 TryUseAllInCase(player);
@@ -70,6 +80,104 @@ namespace allinjector
         {
             if (ShowLog)
                 Debug.LogError("[allinjector] " + msg);
+        }
+
+        /// <summary>
+        /// 디버그: 인벤토리의 모든 아이템 TypeID와 이름 출력
+        /// </summary>
+        private static void DebugInventoryItems(CharacterMainControl player)
+        {
+            if (player == null)
+                return;
+
+            Inventory inventory;
+            Item characterItem = player.CharacterItem;
+            if (characterItem == null)
+            {
+                inventory = null;
+            }
+            else
+            {
+                inventory = characterItem.Inventory;
+            }
+
+            if (inventory == null || inventory.IsEmpty())
+            {
+                Log("인벤토리가 비어 있음");
+                CharacterMainControl.Main.PopText("인벤토리 비어 있음", -1f);
+                return;
+            }
+
+            Log("=== 인벤토리 아이템 목록 ===");
+            int count = 0;
+            foreach (Item it in inventory)
+            {
+                if (it != null)
+                {
+                    count++;
+                    string itemInfo = string.Format("Item #{0}: TypeID={1}, Type={2}",
+                        count, it.TypeID, it.GetType().Name);
+                    Log(itemInfo);
+
+                    // 케이스 타입인지 확인
+                    Type itemType = it.GetType();
+                    FieldInfo slotsField = itemType.GetField(
+                        "slots",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+                    );
+
+                    if (slotsField != null)
+                    {
+                        Log("  -> 이 아이템은 'slots' 필드를 가지고 있음 (케이스일 가능성)");
+                        
+                        // slots 내용 확인
+                        try
+                        {
+                            object slotsObj = slotsField.GetValue(it);
+                            if (slotsObj != null)
+                            {
+                                IEnumerable slotsEnum = slotsObj as IEnumerable;
+                                if (slotsEnum != null)
+                                {
+                                    int slotIndex = 0;
+                                    foreach (object slotObj in slotsEnum)
+                                    {
+                                        if (slotObj == null)
+                                            continue;
+
+                                        Type slotType = slotObj.GetType();
+                                        FieldInfo[] sFields = slotType.GetFields(
+                                            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+                                        );
+
+                                        foreach (FieldInfo f in sFields)
+                                        {
+                                            if (!typeof(Item).IsAssignableFrom(f.FieldType))
+                                                continue;
+
+                                            Item slotItem = f.GetValue(slotObj) as Item;
+                                            if (slotItem != null)
+                                            {
+                                                Log(string.Format("    Slot[{0}]: TypeID={1}",
+                                                    slotIndex, slotItem.TypeID));
+                                            }
+                                        }
+                                        slotIndex++;
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogError("slots 읽기 예외: " + ex);
+                        }
+                    }
+                }
+            }
+
+            string msg = "인벤토리 아이템 " + count + "개 (로그 확인)";
+            CharacterMainControl.Main.PopText(msg, -1f);
+            Log("=== 총 " + count + "개 아이템 ===");
         }
 
         /// <summary>
@@ -109,14 +217,23 @@ namespace allinjector
                 if (it != null && SyringeCaseIDs.Contains(it.TypeID))
                 {
                     syringeCase = it;
+                    Log("케이스 발견: TypeID=" + it.TypeID);
                     break;
                 }
             }
 
             if (syringeCase == null)
             {
-                CharacterMainControl.Main.PopText("주사기 수납백 없음", -1f);
-                Log("케이스(882)를 찾지 못함");
+                // 케이스를 못 찾았을 때 더 자세한 정보 출력
+                Log("케이스(882)를 찾지 못함. 인벤토리 아이템 TypeID 목록:");
+                foreach (Item it in inventory)
+                {
+                    if (it != null)
+                    {
+                        Log("  - TypeID=" + it.TypeID);
+                    }
+                }
+                CharacterMainControl.Main.PopText("주사기 수납백 없음 (K키로 디버그)", -1f);
                 return false;
             }
 
@@ -268,98 +385,178 @@ namespace allinjector
         }
 
         /// <summary>
-        /// 주사기 아이템에서 "사용" 계열 메서드를 Reflection으로 찾아 호출
+        /// 주사기 아이템을 직접 사용 (Use 메서드 호출)
         /// </summary>
         private static bool TryInvokeSyringeUseMethod(CharacterMainControl player, Item syringe)
         {
             if (syringe == null)
                 return false;
 
-            Type itemType = syringe.GetType();
-            MethodInfo chosen;
-            object[] args;
-
-            // 1) 매개변수 없는 Use()
-            chosen = itemType.GetMethod(
-                "Use",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                Type.EmptyTypes,
-                null
-            );
-            if (chosen != null)
-            {
-                args = null;
-                return InvokeSafely(syringe, chosen, args);
-            }
-
-            // 2) (CharacterMainControl) 한 개 받는 메서드 찾기
-            string[] candidateNames = new string[]
-            {
-                "Use",
-                "UseItem",
-                "Apply",
-                "ApplyEffect",
-                "OnUse"
-            };
-
-            MethodInfo[] methods = itemType.GetMethods(
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
-            );
-
-            for (int i = 0; i < methods.Length; i++)
-            {
-                MethodInfo m = methods[i];
-                if (!NameMatchesAny(m.Name, candidateNames))
-                    continue;
-
-                ParameterInfo[] ps = m.GetParameters();
-                if (ps.Length == 1)
-                {
-                    Type pType = ps[0].ParameterType;
-                    if (pType.IsAssignableFrom(typeof(CharacterMainControl)))
-                    {
-                        args = new object[] { player };
-                        return InvokeSafely(syringe, m, args);
-                    }
-                }
-                else if (ps.Length == 0)
-                {
-                    args = null;
-                    return InvokeSafely(syringe, m, args);
-                }
-            }
-
-            Log("주사기 Type=" + itemType.Name + " 에서 Use/UseItem 메서드를 찾지 못함");
-            return false;
-        }
-
-        private static bool NameMatchesAny(string name, string[] candidates)
-        {
-            for (int i = 0; i < candidates.Length; i++)
-            {
-                if (string.Equals(name, candidates[i], StringComparison.Ordinal))
-                    return true;
-            }
-            return false;
-        }
-
-        private static bool InvokeSafely(object target, MethodInfo method, object[] args)
-        {
-            if (target == null || method == null)
-                return false;
+            Log("주사기 사용 시도: TypeID=" + syringe.TypeID);
 
             try
             {
-                method.Invoke(target, args);
-                return true;
+                Type syringeType = syringe.GetType();
+                Log("주사기 타입: " + syringeType.FullName);
+                
+                // 모든 메서드 출력 (디버깅)
+                Log("=== 사용 가능한 모든 메서드 ===");
+                MethodInfo[] allMethods = syringeType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                foreach (MethodInfo m in allMethods)
+                {
+                    string paramStr = string.Join(", ", Array.ConvertAll(m.GetParameters(), p => p.ParameterType.Name + " " + p.Name));
+                    Log("  " + m.ReturnType.Name + " " + m.Name + "(" + paramStr + ")");
+                }
+
+                // 1. Use() 메서드 찾기 - 모든 오버로드 시도
+                MethodInfo[] useMethods = syringeType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Where(m => m.Name == "Use").ToArray();
+
+                Log("Use 메서드 " + useMethods.Length + "개 발견");
+
+                foreach (MethodInfo useMethod in useMethods)
+                {
+                    ParameterInfo[] parameters = useMethod.GetParameters();
+                    string paramStr = string.Join(", ", Array.ConvertAll(parameters, p => p.ParameterType.Name));
+                    Log("시도: Use(" + paramStr + ")");
+
+                    try
+                    {
+                        if (parameters.Length == 0)
+                        {
+                            useMethod.Invoke(syringe, null);
+                            Log("✓ 주사기 사용 성공 (Use): TypeID=" + syringe.TypeID);
+                            return true;
+                        }
+                        else if (parameters.Length == 1)
+                        {
+                            // CharacterMainControl 타입 확인
+                            if (typeof(CharacterMainControl).IsAssignableFrom(parameters[0].ParameterType))
+                            {
+                                useMethod.Invoke(syringe, new object[] { player });
+                                Log("✓ 주사기 사용 성공 (Use with player): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                            // Health 타입 확인
+                            else if (parameters[0].ParameterType.Name == "Health" || parameters[0].ParameterType.Name.Contains("Health"))
+                            {
+                                useMethod.Invoke(syringe, new object[] { player.Health });
+                                Log("✓ 주사기 사용 성공 (Use with Health): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                            // bool 타입 확인
+                            else if (parameters[0].ParameterType == typeof(bool))
+                            {
+                                useMethod.Invoke(syringe, new object[] { true });
+                                Log("✓ 주사기 사용 성공 (Use with bool): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                            // Object 타입 확인 (player 전달)
+                            else if (parameters[0].ParameterType == typeof(object))
+                            {
+                                useMethod.Invoke(syringe, new object[] { player });
+                                Log("✓ 주사기 사용 성공 (Use with object): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                        }
+                        else if (parameters.Length == 2)
+                        {
+                            // Use(Object, Boolean) 형태 처리
+                            if (parameters[0].ParameterType == typeof(object) && parameters[1].ParameterType == typeof(bool))
+                            {
+                                useMethod.Invoke(syringe, new object[] { player, true });
+                                Log("✓ 주사기 사용 성공 (Use with object, bool): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                            // Use(CharacterMainControl, Boolean) 형태 처리
+                            else if (typeof(CharacterMainControl).IsAssignableFrom(parameters[0].ParameterType) && parameters[1].ParameterType == typeof(bool))
+                            {
+                                useMethod.Invoke(syringe, new object[] { player, true });
+                                Log("✓ 주사기 사용 성공 (Use with player, bool): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError("Use 메서드 호출 실패: " + ex.Message);
+                        if (ex.InnerException != null)
+                        {
+                            LogError("  내부 예외: " + ex.InnerException.Message);
+                        }
+                    }
+                }
+
+                // 2. OnUse 메서드 시도
+                MethodInfo[] onUseMethods = syringeType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Where(m => m.Name == "OnUse").ToArray();
+
+                foreach (MethodInfo onUseMethod in onUseMethods)
+                {
+                    try
+                    {
+                        ParameterInfo[] parameters = onUseMethod.GetParameters();
+                        if (parameters.Length == 0)
+                        {
+                            onUseMethod.Invoke(syringe, null);
+                            Log("✓ 주사기 사용 성공 (OnUse): TypeID=" + syringe.TypeID);
+                            return true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError("OnUse 메서드 호출 실패: " + ex.Message);
+                    }
+                }
+
+                // 3. Apply 계열 메서드 시도
+                string[] applyNames = new string[] { "Apply", "ApplyEffect", "ApplyEffects", "Activate" };
+                foreach (string methodName in applyNames)
+                {
+                    MethodInfo[] applyMethods = syringeType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        .Where(m => m.Name == methodName).ToArray();
+
+                    foreach (MethodInfo applyMethod in applyMethods)
+                    {
+                        try
+                        {
+                            ParameterInfo[] parameters = applyMethod.GetParameters();
+                            if (parameters.Length == 0)
+                            {
+                                applyMethod.Invoke(syringe, null);
+                                Log("✓ 주사기 사용 성공 (" + methodName + "): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                            else if (parameters.Length == 1 && typeof(CharacterMainControl).IsAssignableFrom(parameters[0].ParameterType))
+                            {
+                                applyMethod.Invoke(syringe, new object[] { player });
+                                Log("✓ 주사기 사용 성공 (" + methodName + " with player): TypeID=" + syringe.TypeID);
+                                return true;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogError(methodName + " 메서드 호출 실패: " + ex.Message);
+                        }
+                    }
+                }
+
+                LogError("✗ 사용 가능한 메서드를 찾을 수 없음");
+                return false;
             }
             catch (Exception ex)
             {
-                LogError("메서드 호출 중 예외: " + ex);
+                LogError("주사기 사용 중 예외: " + ex.GetType().Name + " - " + ex.Message);
+                LogError("스택 트레이스: " + ex.StackTrace);
+                if (ex.InnerException != null)
+                {
+                    LogError("내부 예외: " + ex.InnerException.Message);
+                }
                 return false;
             }
         }
+
+
     }
 }
 
